@@ -5,32 +5,31 @@ const url = require('url');
 const crypto = require('crypto');
 
 const PORT = process.env.PORT || 3000;
-const DB_PATH = path.join(__dirname, 'database.json');
-const PUBLIC = __dirname; // Serve from root (files are in root on GitHub)
+const PUBLIC = __dirname;
 
-// Session store (in-memory for simplicity, persists while server runs)
+// Supabase Config (set these in Render Environment Variables)
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_KEY = process.env.SUPABASE_KEY || '';
+
 const sessions = new Map();
 
-function loadDB() {
-  if (!fs.existsSync(DB_PATH)) {
-    const initial = {
-      users: [
-        { id: 1, username: 'oxy', password: '200767@', role: 'user' },
-        { id: 2, username: 'admin', password: '200200', role: 'admin' }
-      ],
-      customers: [],
-      transactions: [],
-      nextCustomerId: 1,
-      nextTransactionId: 1
-    };
-    fs.writeFileSync(DB_PATH, JSON.stringify(initial, null, 2));
-    return initial;
+async function supabaseRequest(endpoint, options = {}) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${endpoint}`, {
+    ...options,
+    headers: {
+      'apikey': SUPABASE_KEY,
+      'Authorization': `Bearer ${SUPABASE_KEY}`,
+      'Content-Type': 'application/json',
+      'Prefer': options.prefer || 'return=representation',
+      ...options.headers
+    }
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(err);
   }
-  return JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
-}
-
-function saveDB(db) {
-  fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
 }
 
 function parseCookies(req) {
@@ -88,12 +87,11 @@ function sendFile(res, filePath) {
   });
 }
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   const parsed = url.parse(req.url, true);
   const pathname = parsed.pathname;
   const method = req.method;
 
-  // CORS
   res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -105,123 +103,118 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // API Routes
   if (pathname.startsWith('/api/')) {
     let body = '';
     req.on('data', chunk => body += chunk);
-    req.on('end', () => {
+    req.on('end', async () => {
       let data = {};
       try { if (body) data = JSON.parse(body); } catch (e) {}
 
       const session = getSession(req);
 
-      // Login
-      if (pathname === '/api/login' && method === 'POST') {
-        const db = loadDB();
-        const user = db.users.find(u => u.username === data.username && u.password === data.password);
-        if (!user) return sendJSON(res, { error: 'اسم المستخدم أو كلمة المرور غير صحيحة' }, 401);
-        setSession(res, { id: user.id, username: user.username, role: user.role });
-        return sendJSON(res, { success: true, user: { id: user.id, username: user.username, role: user.role } });
-      }
-
-      // Logout
-      if (pathname === '/api/logout' && method === 'POST') {
-        clearSession(req, res);
-        return sendJSON(res, { success: true });
-      }
-
-      // Me
-      if (pathname === '/api/me' && method === 'GET') {
-        if (!session) return sendJSON(res, { error: 'غير مسجل' }, 401);
-        return sendJSON(res, session);
-      }
-
-      // Require auth for the rest
-      if (!session) return sendJSON(res, { error: 'غير مصرح' }, 401);
-
-      // Customers list
-      if (pathname === '/api/customers' && method === 'GET') {
-        const search = (parsed.query.search || '').toLowerCase();
-        const db = loadDB();
-        let customers = db.customers.map(c => {
-          const trans = db.transactions.filter(t => t.customer_id === c.id);
-          const balance = trans.reduce((sum, t) => sum + (t.type === 'debt' ? t.amount : -t.amount), 0);
-          const first = trans.length ? trans.map(t => t.date).sort()[0] : null;
-          return { ...c, balance, first_transaction: first };
-        });
-        if (search) {
-          customers = customers.filter(c => c.name.toLowerCase().includes(search) || c.phone.includes(search));
+      try {
+        // Login
+        if (pathname === '/api/login' && method === 'POST') {
+          const users = await supabaseRequest(`users?username=eq.${data.username}&password=eq.${data.password}&select=*`);
+          const user = users && users[0];
+          if (!user) return sendJSON(res, { error: 'اسم المستخدم أو كلمة المرور غير صحيحة' }, 401);
+          setSession(res, { id: user.id, username: user.username, role: user.role });
+          return sendJSON(res, { success: true, user: { id: user.id, username: user.username, role: user.role } });
         }
-        customers.sort((a, b) => a.name.localeCompare(b.name, 'ar'));
-        return sendJSON(res, customers);
-      }
 
-      // Add customer
-      if (pathname === '/api/customers' && method === 'POST') {
-        const { name, phone } = data;
-        if (!name || !phone) return sendJSON(res, { error: 'الاسم والهاتف مطلوبان' }, 400);
-        const db = loadDB();
-        const customer = { id: db.nextCustomerId++, name, phone, created_at: new Date().toISOString() };
-        db.customers.push(customer);
-        saveDB(db);
-        return sendJSON(res, customer);
-      }
-
-      // Customer detail
-      const custMatch = pathname.match(/^\/api\/customers\/(\d+)$/);
-      if (custMatch && method === 'GET') {
-        const id = parseInt(custMatch[1]);
-        const db = loadDB();
-        const customer = db.customers.find(c => c.id === id);
-        if (!customer) return sendJSON(res, { error: 'الزبون غير موجود' }, 404);
-        const transactions = db.transactions
-          .filter(t => t.customer_id === id)
-          .sort((a, b) => new Date(b.date) - new Date(a.date) || b.id - a.id);
-        const balance = transactions.reduce((sum, t) => sum + (t.type === 'debt' ? t.amount : -t.amount), 0);
-        return sendJSON(res, { ...customer, transactions, balance });
-      }
-
-      // Add transaction
-      const transMatch = pathname.match(/^\/api\/customers\/(\d+)\/transactions$/);
-      if (transMatch && method === 'POST') {
-        const id = parseInt(transMatch[1]);
-        const { type, amount, date } = data;
-        if (!['debt', 'payment'].includes(type) || !amount || amount <= 0 || !date) {
-          return sendJSON(res, { error: 'بيانات غير صحيحة' }, 400);
+        if (pathname === '/api/logout' && method === 'POST') {
+          clearSession(req, res);
+          return sendJSON(res, { success: true });
         }
-        const db = loadDB();
-        if (!db.customers.find(c => c.id === id)) return sendJSON(res, { error: 'الزبون غير موجود' }, 404);
-        const trans = {
-          id: db.nextTransactionId++,
-          customer_id: id,
-          type,
-          amount: parseFloat(amount),
-          date,
-          created_at: new Date().toISOString()
-        };
-        db.transactions.push(trans);
-        saveDB(db);
-        return sendJSON(res, trans);
+
+        if (pathname === '/api/me' && method === 'GET') {
+          if (!session) return sendJSON(res, { error: 'غير مسجل' }, 401);
+          return sendJSON(res, session);
+        }
+
+        if (!session) return sendJSON(res, { error: 'غير مصرح' }, 401);
+
+        // Customers list
+        if (pathname === '/api/customers' && method === 'GET') {
+          const search = (parsed.query.search || '').toLowerCase();
+          let customers = await supabaseRequest('customers?select=*&order=name.asc');
+          if (!customers) customers = [];
+
+          // Calculate balances
+          const allTrans = await supabaseRequest('transactions?select=*') || [];
+          customers = customers.map(c => {
+            const trans = allTrans.filter(t => t.customer_id === c.id);
+            const balance = trans.reduce((sum, t) => sum + (t.type === 'debt' ? Number(t.amount) : -Number(t.amount)), 0);
+            const first = trans.length ? trans.map(t => t.date).sort()[0] : null;
+            return { ...c, balance, first_transaction: first };
+          });
+
+          if (search) {
+            customers = customers.filter(c => c.name.toLowerCase().includes(search) || c.phone.includes(search));
+          }
+          return sendJSON(res, customers);
+        }
+
+        // Add customer
+        if (pathname === '/api/customers' && method === 'POST') {
+          const { name, phone } = data;
+          if (!name || !phone) return sendJSON(res, { error: 'الاسم والهاتف مطلوبان' }, 400);
+          const result = await supabaseRequest('customers', {
+            method: 'POST',
+            body: JSON.stringify({ name, phone })
+          });
+          return sendJSON(res, result[0]);
+        }
+
+        // Customer detail
+        const custMatch = pathname.match(/^\/api\/customers\/(\d+)$/);
+        if (custMatch && method === 'GET') {
+          const id = parseInt(custMatch[1]);
+          const customers = await supabaseRequest(`customers?id=eq.${id}&select=*`);
+          if (!customers || !customers[0]) return sendJSON(res, { error: 'الزبون غير موجود' }, 404);
+          const customer = customers[0];
+          const transactions = await supabaseRequest(`transactions?customer_id=eq.${id}&order=date.desc,id.desc`) || [];
+          const balance = transactions.reduce((sum, t) => sum + (t.type === 'debt' ? Number(t.amount) : -Number(t.amount)), 0);
+          return sendJSON(res, { ...customer, transactions, balance });
+        }
+
+        // Add transaction
+        const transMatch = pathname.match(/^\/api\/customers\/(\d+)\/transactions$/);
+        if (transMatch && method === 'POST') {
+          const id = parseInt(transMatch[1]);
+          const { type, amount, date } = data;
+          if (!['debt', 'payment'].includes(type) || !amount || amount <= 0 || !date) {
+            return sendJSON(res, { error: 'بيانات غير صحيحة' }, 400);
+          }
+          const result = await supabaseRequest('transactions', {
+            method: 'POST',
+            body: JSON.stringify({ customer_id: id, type, amount: parseFloat(amount), date })
+          });
+          return sendJSON(res, result[0]);
+        }
+
+        // Stats
+        if (pathname === '/api/stats' && method === 'GET') {
+          if (session.role !== 'admin') return sendJSON(res, { error: 'صلاحيات غير كافية' }, 403);
+          const allTrans = await supabaseRequest('transactions?select=*') || [];
+          const now = new Date();
+          const today = now.toISOString().split('T')[0];
+          const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+          const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+
+          const total = allTrans.reduce((sum, t) => sum + (t.type === 'debt' ? Number(t.amount) : -Number(t.amount)), 0);
+          const daily = allTrans.filter(t => t.date === today && t.type === 'debt').reduce((s, t) => s + Number(t.amount), 0);
+          const weekly = allTrans.filter(t => t.date >= weekAgo && t.type === 'debt').reduce((s, t) => s + Number(t.amount), 0);
+          const monthly = allTrans.filter(t => t.date >= monthStart && t.type === 'debt').reduce((s, t) => s + Number(t.amount), 0);
+
+          return sendJSON(res, { total, daily, weekly, monthly });
+        }
+
+        return sendJSON(res, { error: 'غير موجود' }, 404);
+      } catch (err) {
+        console.error(err);
+        return sendJSON(res, { error: 'خطأ في قاعدة البيانات' }, 500);
       }
-
-      // Stats (admin only)
-      if (pathname === '/api/stats' && method === 'GET') {
-        if (session.role !== 'admin') return sendJSON(res, { error: 'صلاحيات غير كافية' }, 403);
-        const db = loadDB();
-        const now = new Date();
-        const today = now.toISOString().split('T')[0];
-        const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
-
-        const total = db.transactions.reduce((sum, t) => sum + (t.type === 'debt' ? t.amount : -t.amount), 0);
-        const daily = db.transactions.filter(t => t.date === today && t.type === 'debt').reduce((s, t) => s + t.amount, 0);
-        const weekly = db.transactions.filter(t => t.date >= weekAgo && t.type === 'debt').reduce((s, t) => s + t.amount, 0);
-        const monthly = db.transactions.filter(t => t.date >= monthStart && t.type === 'debt').reduce((s, t) => s + t.amount, 0);
-
-        return sendJSON(res, { total, daily, weekly, monthly });
-      }
-
-      return sendJSON(res, { error: 'غير موجود' }, 404);
     });
     return;
   }
@@ -238,8 +231,7 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
   console.log(`\n✅ سجلها علي يعمل على: http://localhost:${PORT}`);
-  console.log('المستخدمون:');
-  console.log('  oxy   / 200767@  (موظف)');
-  console.log('  admin / 200200   (صاحب المحل)\n');
-  console.log('قاعدة البيانات: database.json (على السيرفر)\n');
+  if (!SUPABASE_URL || !SUPABASE_KEY) {
+    console.log('⚠️  تحذير: متغيرات SUPABASE_URL و SUPABASE_KEY غير موجودة');
+  }
 });
