@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>سجلها علي - إدارة ديون المحل</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Login Screen -->
+    <div id="login-screen" class="screen active">
+      <div class="login-card">
+        <div class="logo">
+          <i class="fas fa-receipt"></i>
+          <h1>سجلها علي</h1>
+          <p>نظام إدارة ديون المحل</p>
+        </div>
+        <form id="login-form">
+          <div class="form-group">
+            <label>اسم المستخدم</label>
+            <input type="text" id="username" placeholder="أدخل اسم المستخدم" required autocomplete="username">
+          </div>
+          <div class="form-group">
+            <label>كلمة المرور</label>
+            <input type="password" id="password" placeholder="أدخل كلمة المرور" required autocomplete="current-password">
+          </div>
+          <button type="submit" class="btn-primary">دخول</button>
+          <div id="login-error" class="error"></div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Main App -->
+    <div id="main-app" class="screen">
+      <header>
+        <div class="header-left">
+          <h2 id="app-title">سجلها علي</h2>
+          <span id="user-role" class="role-badge"></span>
+        </div>
+        <div class="header-right">
+          <span id="current-user"></span>
+          <button id="logout-btn" class="btn-outline"><i class="fas fa-sign-out-alt"></i> خروج</button>
+        </div>
+      </header>
+
+      <div class="container">
+        <!-- OXY / User View -->
+        <div id="user-view" class="view">
+          <div class="toolbar">
+            <div class="search-box">
+              <i class="fas fa-search"></i>
+              <input type="text" id="search-input" placeholder="ابحث بالاسم أو رقم الهاتف...">
+            </div>
+            <button id="add-customer-btn" class="btn-primary"><i class="fas fa-user-plus"></i> زبون جديد</button>
+          </div>
+          <div id="customers-list" class="customers-grid"></div>
+        </div>
+
+        <!-- Admin View -->
+        <div id="admin-view" class="view">
+          <div class="stats-grid">
+            <div class="stat-card">
+              <div class="stat-icon"><i class="fas fa-coins"></i></div>
+              <div class="stat-info">
+                <span class="stat-label">إجمالي الدين المتراكم</span>
+                <span class="stat-value" id="total-debt">0 ₪</span>
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-icon"><i class="fas fa-calendar-day"></i></div>
+              <div class="stat-info">
+                <span class="stat-label">ديون اليوم</span>
+                <span class="stat-value" id="daily-debt">0 ₪</span>
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-icon"><i class="fas fa-calendar-week"></i></div>
+              <div class="stat-info">
+                <span class="stat-label">ديون الأسبوع</span>
+                <span class="stat-value" id="weekly-debt">0 ₪</span>
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-icon"><i class="fas fa-calendar-alt"></i></div>
+              <div class="stat-info">
+                <span class="stat-label">ديون الشهر</span>
+                <span class="stat-value" id="monthly-debt">0 ₪</span>
+              </div>
+            </div>
+          </div>
+          <h3>قائمة الزبائن والديون</h3>
+          <div id="admin-customers-list" class="table-container"></div>
+        </div>
+
+        <!-- Customer Detail Modal -->
+        <div id="customer-modal" class="modal">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h3 id="modal-customer-name">تفاصيل الزبون</h3>
+              <button class="close-btn" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+              <div class="customer-info">
+                <p><strong>الهاتف:</strong> <span id="modal-phone"></span></p>
+                <p><strong>الرصيد الحالي:</strong> <span id="modal-balance" class="balance"></span></p>
+                <button id="whatsapp-btn" class="btn-whatsapp"><i class="fab fa-whatsapp"></i> إرسال رسالة واتساب</button>
+              </div>
+              <div class="add-transaction">
+                <h4>إضافة حركة جديدة</h4>
+                <div class="form-row">
+                  <select id="trans-type">
+                    <option value="debt">دين جديد (على الحساب)</option>
+                    <option value="payment">دفعة</option>
+                  </select>
+                  <input type="number" id="trans-amount" placeholder="المبلغ" min="0.01" step="0.01">
+                  <input type="date" id="trans-date">
+                  <button id="add-trans-btn" class="btn-primary">إضافة</button>
+                </div>
+              </div>
+              <div class="transactions-list">
+                <h4>سجل الحركات</h4>
+                <div id="transactions-container"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Add Customer Modal -->
+        <div id="add-customer-modal" class="modal">
+          <div class="modal-content small">
+            <div class="modal-header">
+              <h3>إضافة زبون جديد</h3>
+              <button class="close-btn" onclick="closeAddModal()">&times;</button>
+            </div>
+            <form id="add-customer-form">
+              <div class="form-group">
+                <label>الاسم الكامل</label>
+                <input type="text" id="new-name" required>
+              </div>
+              <div class="form-group">
+                <label>رقم الهاتف</label>
+                <input type="tel" id="new-phone" required placeholder="05xxxxxxxx أو +972...">
+              </div>
+              <button type="submit" class="btn-primary">حفظ الزبون</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
