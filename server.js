@@ -252,4 +252,30 @@ const server = http.createServer(async (req, res) => {
 
           const total = allTrans.reduce((sum, t) => sum + (t.type === 'debt' ? Number(t.amount) : -Number(t.amount)), 0);
           const daily = allTrans.filter(t => t.date === today && t.type === 'debt').reduce((s, t) => s + Number(t.amount), 0);
-          const weekly = allTrans.filter(t => t.date >= weekAgo && t.type === 'debt').reduce((s, t) => s + Number(t.amoun
+          const weekly = allTrans.filter(t => t.date >= weekAgo && t.type === 'debt').reduce((s, t) => s + Number(t.amount), 0);
+          const monthly = allTrans.filter(t => t.date >= monthStart && t.type === 'debt').reduce((s, t) => s + Number(t.amount), 0);
+
+          return sendJSON(res, { total, daily, weekly, monthly });
+        }
+
+        return sendJSON(res, { error: 'غير موجود' }, 404);
+      } catch (err) {
+        console.error(err);
+        return sendJSON(res, { error: 'خطأ في قاعدة البيانات' }, 500);
+      }
+    });
+    return;
+  }
+
+  let filePath = pathname === '/' ? path.join(PUBLIC, 'index.html') : path.join(PUBLIC, pathname);
+  if (!filePath.startsWith(PUBLIC)) {
+    res.writeHead(403);
+    res.end('Forbidden');
+    return;
+  }
+  sendFile(res, filePath);
+});
+
+server.listen(PORT, () => {
+  console.log(`✅ سجلها علي يعمل على المنفذ ${PORT}`);
+});
