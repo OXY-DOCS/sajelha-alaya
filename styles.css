@@ -393,8 +393,55 @@ th {
 .type.payment { color: var(--success); }
 
 @media (max-width: 600px) {
-  .login-card { margin: 40px 16px; padding: 30px 20px; }
-  .container { padding: 16px; }
+  .login-card { 
+    margin: 20px 12px; 
+    padding: 24px 16px; 
+    border-radius: 16px;
+  }
+  .logo h1 { font-size: 26px; }
+  .container { padding: 12px; }
   .form-row { flex-direction: column; }
-  header { flex-direction: column; gap: 12px; align-items: flex-start; }
+  header { 
+    flex-direction: column; 
+    gap: 10px; 
+    align-items: stretch; 
+    padding: 12px 16px;
+  }
+  .header-left { text-align: center; }
+  .btn-outline { width: 100%; }
+  .customers-grid { 
+    grid-template-columns: 1fr; 
+    gap: 12px; 
+  }
+  .stats-grid { 
+    grid-template-columns: 1fr 1fr; 
+    gap: 10px; 
+  }
+  .stat-card { 
+    padding: 14px; 
+    flex-direction: column; 
+    text-align: center; 
+    gap: 8px;
+  }
+  .stat-icon { width: 44px; height: 44px; font-size: 18px; }
+  .stat-value { font-size: 18px; }
+  .modal-content { 
+    width: 95%; 
+    max-height: 90vh; 
+    margin: 10px auto;
+    border-radius: 16px;
+  }
+  .search-box { min-width: 100%; }
+  .toolbar { flex-direction: column; }
+  table { font-size: 14px; }
+  .transaction-item { 
+    flex-direction: column; 
+    align-items: flex-start; 
+    gap: 6px; 
+  }
+}
+
+@media (max-width: 380px) {
+  .stats-grid { grid-template-columns: 1fr; }
+  .logo h1 { font-size: 22px; }
 }
