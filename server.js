@@ -1,357 +1,260 @@
-const API = '';
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const url = require('url');
+const crypto = require('crypto');
 
-let currentUser = null;
-let currentCustomerId = null;
+const PORT = process.env.PORT || 3000;
+const PUBLIC = __dirname;
 
-// DOM Elements
-const loginScreen = document.getElementById('login-screen');
-const mainApp = document.getElementById('main-app');
-const userView = document.getElementById('user-view');
-const adminView = document.getElementById('admin-view');
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_KEY = process.env.SUPABASE_KEY || '';
 
-// Login
-document.getElementById('login-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const username = document.getElementById('username').value.trim();
-  const password = document.getElementById('password').value;
-  const errorEl = document.getElementById('login-error');
+const sessions = new Map();
 
-  try {
-    const res = await fetch('/api/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ username, password })
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      errorEl.textContent = data.error || 'خطأ في تسجيل الدخول';
+async function supabaseRequest(endpoint, options = {}) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${endpoint}`, {
+    ...options,
+    headers: {
+      'apikey': SUPABASE_KEY,
+      'Authorization': `Bearer ${SUPABASE_KEY}`,
+      'Content-Type': 'application/json',
+      'Prefer': options.prefer || 'return=representation',
+      ...options.headers
+    }
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(err);
+  }
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
+}
+
+function parseCookies(req) {
+  const list = {};
+  const cookieHeader = req.headers.cookie;
+  if (!cookieHeader) return list;
+  cookieHeader.split(';').forEach(cookie => {
+    const parts = cookie.split('=');
+    list[parts[0].trim()] = decodeURIComponent(parts[1] || '');
+  });
+  return list;
+}
+
+function getSession(req) {
+  const cookies = parseCookies(req);
+  const sid = cookies.sid;
+  if (sid && sessions.has(sid)) return sessions.get(sid);
+  return null;
+}
+
+function setSession(res, user) {
+  const sid = crypto.randomBytes(16).toString('hex');
+  sessions.set(sid, user);
+  res.setHeader('Set-Cookie', `sid=${sid}; Path=/; HttpOnly; Max-Age=86400; SameSite=None; Secure`);
+  return sid;
+}
+
+function clearSession(req, res) {
+  const cookies = parseCookies(req);
+  if (cookies.sid) sessions.delete(cookies.sid);
+  res.setHeader('Set-Cookie', 'sid=; Path=/; HttpOnly; Max-Age=0');
+}
+
+function sendJSON(res, data, status = 200) {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify(data));
+}
+
+function sendFile(res, filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  const types = {
+    '.html': 'text/html; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.js': 'application/javascript; charset=utf-8',
+    '.json': 'application/json'
+  };
+  fs.readFile(filePath, (err, data) => {
+    if (err) {
+      res.writeHead(404);
+      res.end('Not found');
       return;
     }
-    currentUser = data.user;
-    showApp();
-  } catch (err) {
-    errorEl.textContent = 'خطأ في الاتصال بالسيرفر';
-  }
-});
-
-// Logout
-document.getElementById('logout-btn').addEventListener('click', async () => {
-  await fetch('/api/logout', { method: 'POST', credentials: 'include' });
-  currentUser = null;
-  loginScreen.classList.add('active');
-  mainApp.classList.remove('active');
-  document.getElementById('login-form').reset();
-  document.getElementById('login-error').textContent = '';
-});
-
-async function showApp() {
-  loginScreen.classList.remove('active');
-  mainApp.classList.add('active');
-  document.getElementById('current-user').textContent = currentUser.username;
-  document.getElementById('user-role').textContent = currentUser.role === 'admin' ? 'صاحب المحل' : 'موظف';
-
-  if (currentUser.role === 'admin') {
-    userView.classList.remove('active');
-    adminView.classList.add('active');
-    await loadAdminData();
-  } else {
-    adminView.classList.remove('active');
-    userView.classList.add('active');
-    await loadCustomers();
-  }
-}
-
-// Load Customers (User)
-async function loadCustomers(search = '') {
-  const res = await fetch(`/api/customers?search=${encodeURIComponent(search)}`, { credentials: 'include' });
-  const customers = await res.json();
-  const container = document.getElementById('customers-list');
-  container.innerHTML = customers.length ? customers.map(c => `
-    <div class="customer-card" onclick="openCustomer(${c.id})">
-      <h4>${escapeHtml(c.name)}</h4>
-      <div class="phone">${escapeHtml(c.phone)}</div>
-      <div class="balance ${getBalanceClass(c.balance)}">${formatMoney(c.balance)}</div>
-    </div>
-  `).join('') : '<p style="text-align:center;color:#757575;">لا توجد نتائج</p>';
-}
-
-document.getElementById('search-input').addEventListener('input', (e) => {
-  loadCustomers(e.target.value);
-});
-
-// Admin Data
-async function loadAdminData() {
-  const [statsRes, customersRes] = await Promise.all([
-    fetch('/api/stats', { credentials: 'include' }),
-    fetch('/api/customers', { credentials: 'include' })
-  ]);
-  const stats = await statsRes.json();
-  const customers = await customersRes.json();
-
-  document.getElementById('total-debt').textContent = formatMoney(stats.total);
-  document.getElementById('daily-debt').textContent = formatMoney(stats.daily);
-  document.getElementById('weekly-debt').textContent = formatMoney(stats.weekly);
-  document.getElementById('monthly-debt').textContent = formatMoney(stats.monthly);
-
-  const container = document.getElementById('admin-customers-list');
-  container.innerHTML = `
-    <table>
-      <thead>
-        <tr>
-          <th>الاسم</th>
-          <th>الهاتف</th>
-          <th>الرصيد</th>
-          <th>منذ</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${customers.map(c => `
-          <tr onclick="openCustomer(${c.id})" style="cursor:pointer">
-            <td>${escapeHtml(c.name)}</td>
-            <td>${escapeHtml(c.phone)}</td>
-            <td class="balance ${getBalanceClass(c.balance)}">${formatMoney(c.balance)}</td>
-            <td>${c.first_transaction ? formatDate(c.first_transaction) : '-'}</td>
-          </tr>
-        `).join('')}
-      </tbody>
-    </table>
-  `;
-}
-
-// Customer Modal
-async function openCustomer(id) {
-  currentCustomerId = id;
-  const res = await fetch(`/api/customers/${id}`, { credentials: 'include' });
-  const data = await res.json();
-
-  document.getElementById('modal-customer-name').textContent = data.name;
-  document.getElementById('modal-phone').textContent = data.phone;
-  const balanceEl = document.getElementById('modal-balance');
-  balanceEl.textContent = formatMoney(data.balance);
-  balanceEl.className = 'balance ' + getBalanceClass(data.balance);
-
-  const transContainer = document.getElementById('transactions-container');
-  const isAdmin = currentUser && currentUser.role === 'admin';
-  transContainer.innerHTML = data.transactions.length ? data.transactions.map(t => `
-    <div class="transaction-item">
-      <div>
-        <span class="type ${t.type}">${t.type === 'debt' ? 'دين' : 'دفعة'}</span>
-        <span style="color:#757575;margin-right:10px">${formatDate(t.date)}</span>
-      </div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <strong class="${t.type === 'debt' ? 'type debt' : 'type payment'}">
-          ${t.type === 'debt' ? '+' : '-'}${formatMoney(t.amount)}
-        </strong>
-        ${isAdmin ? `
-          <button onclick="editTransaction(${t.id}, '${t.type}', ${t.amount}, '${t.date}')" style="background:#FF9800;color:white;border:none;padding:4px 8px;border-radius:6px;cursor:pointer;font-size:12px">تعديل</button>
-          <button onclick="deleteTransaction(${t.id})" style="background:#E53935;color:white;border:none;padding:4px 8px;border-radius:6px;cursor:pointer;font-size:12px">حذف</button>
-        ` : ''}
-      </div>
-    </div>
-  `).join('') : '<p style="text-align:center;color:#757575;">لا توجد حركات بعد</p>';
-
-  // Admin customer controls
-  let adminControls = document.getElementById('admin-customer-controls');
-  if (!adminControls) {
-    adminControls = document.createElement('div');
-    adminControls.id = 'admin-customer-controls';
-    adminControls.style.marginTop = '10px';
-    document.querySelector('.customer-info').appendChild(adminControls);
-  }
-  if (isAdmin) {
-    adminControls.innerHTML = `
-      <button onclick="editCustomer(${data.id}, '${escapeHtml(data.name)}', '${escapeHtml(data.phone)}')" style="background:#FF9800;color:white;border:none;padding:8px 12px;border-radius:8px;cursor:pointer;margin-left:8px">تعديل الزبون</button>
-      <button onclick="deleteCustomer(${data.id})" style="background:#E53935;color:white;border:none;padding:8px 12px;border-radius:8px;cursor:pointer">حذف الزبون</button>
-    `;
-  } else {
-    adminControls.innerHTML = '';
-  }
-
-  // WhatsApp
-  document.getElementById('whatsapp-btn').onclick = () => {
-    const phone = cleanPhone(data.phone);
-    const message = `مرحباً ${data.name}،\nالرصيد المتبقي عليك هو ${data.balance.toFixed(2)} ₪.\nشكراً لك.`;
-    window.open(`https://wa.me/${phone}?text=${encodeURIComponent(message)}`, '_blank');
-  };
-
-  // Set date to today
-  document.getElementById('trans-date').valueAsDate = new Date();
-
-  document.getElementById('customer-modal').classList.add('active');
-}
-
-function closeModal() {
-  document.getElementById('customer-modal').classList.remove('active');
-  currentCustomerId = null;
-}
-
-// Admin functions
-async function editCustomer(id, name, phone) {
-  const newName = prompt('الاسم الجديد:', name);
-  if (!newName) return;
-  const newPhone = prompt('الهاتف الجديد:', phone);
-  if (!newPhone) return;
-  const res = await fetch(`/api/customers/${id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({ name: newName, phone: newPhone })
+    res.writeHead(200, { 'Content-Type': types[ext] || 'text/plain' });
+    res.end(data);
   });
-  if (res.ok) {
-    await openCustomer(id);
-    if (currentUser.role === 'admin') await loadAdminData();
-  }
 }
 
-async function deleteCustomer(id) {
-  if (!confirm('هل أنت متأكد من حذف هذا الزبون وكل حركاته؟')) return;
-  try {
-    const res = await fetch(`/api/customers/${id}`, {
-      method: 'DELETE',
-      credentials: 'include'
-    });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok) {
-      alert('تم الحذف بنجاح');
-      closeModal();
-      if (currentUser.role === 'admin') await loadAdminData();
-      else await loadCustomers();
-    } else {
-      alert('فشل الحذف: ' + (data.error || res.status));
-    }
-  } catch (err) {
-    alert('خطأ في الاتصال: ' + err.message);
-  }
-}
+const server = http.createServer(async (req, res) => {
+  const parsed = url.parse(req.url, true);
+  const pathname = parsed.pathname;
+  const method = req.method;
 
-async function editTransaction(id, type, amount, date) {
-  const newType = prompt('النوع (debt أو payment):', type);
-  if (!newType || !['debt', 'payment'].includes(newType)) return;
-  const newAmount = prompt('المبلغ الجديد:', amount);
-  if (!newAmount || isNaN(newAmount)) return;
-  const newDate = prompt('التاريخ (YYYY-MM-DD):', date);
-  if (!newDate) return;
-  const res = await fetch(`/api/transactions/${id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({ type: newType, amount: parseFloat(newAmount), date: newDate })
-  });
-  if (res.ok && currentCustomerId) await openCustomer(currentCustomerId);
-}
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-async function deleteTransaction(id) {
-  if (!confirm('هل أنت متأكد من حذف هذه الحركة؟')) return;
-  try {
-    const res = await fetch(`/api/transactions/${id}`, {
-      method: 'DELETE',
-      credentials: 'include'
-    });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok) {
-      alert('تم حذف الحركة');
-      if (currentCustomerId) await openCustomer(currentCustomerId);
-    } else {
-      alert('فشل الحذف: ' + (data.error || res.status));
-    }
-  } catch (err) {
-    alert('خطأ: ' + err.message);
-  }
-}
-
-// Add Transaction
-document.getElementById('add-trans-btn').addEventListener('click', async () => {
-  if (!currentCustomerId) return;
-  const type = document.getElementById('trans-type').value;
-  const amount = parseFloat(document.getElementById('trans-amount').value);
-  const date = document.getElementById('trans-date').value;
-
-  if (!amount || amount <= 0 || !date) {
-    alert('يرجى إدخال مبلغ وتاريخ صحيحين');
+  if (method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
     return;
   }
 
-  const res = await fetch(`/api/customers/${currentCustomerId}/transactions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({ type, amount, date })
-  });
+  if (pathname.startsWith('/api/')) {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      let data = {};
+      try { if (body) data = JSON.parse(body); } catch (e) {}
 
-  if (res.ok) {
-    document.getElementById('trans-amount').value = '';
-    await openCustomer(currentCustomerId);
-    if (currentUser.role === 'admin') await loadAdminData();
-    else await loadCustomers(document.getElementById('search-input').value);
+      const session = getSession(req);
+
+      try {
+        if (pathname === '/api/login' && method === 'POST') {
+          const users = await supabaseRequest(`users?username=eq.${encodeURIComponent(data.username)}&password=eq.${encodeURIComponent(data.password)}&select=*`);
+          const user = users && users[0];
+          if (!user) return sendJSON(res, { error: 'اسم المستخدم أو كلمة المرور غير صحيحة' }, 401);
+          setSession(res, { id: user.id, username: user.username, role: user.role });
+          return sendJSON(res, { success: true, user: { id: user.id, username: user.username, role: user.role } });
+        }
+
+        if (pathname === '/api/logout' && method === 'POST') {
+          clearSession(req, res);
+          return sendJSON(res, { success: true });
+        }
+
+        if (pathname === '/api/me' && method === 'GET') {
+          if (!session) return sendJSON(res, { error: 'غير مسجل' }, 401);
+          return sendJSON(res, session);
+        }
+
+        if (!session) return sendJSON(res, { error: 'غير مصرح' }, 401);
+
+        if (pathname === '/api/customers' && method === 'GET') {
+          const search = (parsed.query.search || '').toLowerCase();
+          let customers = await supabaseRequest('customers?select=*&order=name.asc') || [];
+          const allTrans = await supabaseRequest('transactions?select=*') || [];
+          customers = customers.map(c => {
+            const trans = allTrans.filter(t => t.customer_id === c.id);
+            const balance = trans.reduce((sum, t) => sum + (t.type === 'debt' ? Number(t.amount) : -Number(t.amount)), 0);
+            const first = trans.length ? trans.map(t => t.date).sort()[0] : null;
+            return { ...c, balance, first_transaction: first };
+          });
+          if (search) {
+            customers = customers.filter(c => c.name.toLowerCase().includes(search) || (c.phone && c.phone.includes(search)));
+          }
+          return sendJSON(res, customers);
+        }
+
+        if (pathname === '/api/customers' && method === 'POST') {
+          const { name, phone } = data;
+          if (!name || !phone) return sendJSON(res, { error: 'الاسم والهاتف مطلوبان' }, 400);
+          const result = await supabaseRequest('customers', {
+            method: 'POST',
+            body: JSON.stringify({ name, phone })
+          });
+          return sendJSON(res, result[0]);
+        }
+
+        const custMatch = pathname.match(/^\/api\/customers\/(\d+)$/);
+        if (custMatch && method === 'GET') {
+          const id = parseInt(custMatch[1]);
+          const customers = await supabaseRequest(`customers?id=eq.${id}&select=*`);
+          if (!customers || !customers[0]) return sendJSON(res, { error: 'الزبون غير موجود' }, 404);
+          const customer = customers[0];
+          const transactions = await supabaseRequest(`transactions?customer_id=eq.${id}&order=date.desc,id.desc`) || [];
+          const balance = transactions.reduce((sum, t) => sum + (t.type === 'debt' ? Number(t.amount) : -Number(t.amount)), 0);
+          return sendJSON(res, { ...customer, transactions, balance });
+        }
+
+        if (custMatch && method === 'PUT') {
+          if (session.role !== 'admin') return sendJSON(res, { error: 'صلاحيات غير كافية' }, 403);
+          const id = parseInt(custMatch[1]);
+          const { name, phone } = data;
+          if (!name || !phone) return sendJSON(res, { error: 'الاسم والهاتف مطلوبان' }, 400);
+          const result = await supabaseRequest(`customers?id=eq.${id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ name, phone })
+          });
+          return sendJSON(res, result[0]);
+        }
+
+        if (custMatch && method === 'DELETE') {
+          if (session.role !== 'admin') return sendJSON(res, { error: 'صلاحيات غير كافية' }, 403);
+          const id = parseInt(custMatch[1]);
+          await supabaseRequest(`customers?id=eq.${id}`, { method: 'DELETE' });
+          return sendJSON(res, { success: true });
+        }
+
+        const transMatch = pathname.match(/^\/api\/customers\/(\d+)\/transactions$/);
+        if (transMatch && method === 'POST') {
+          const id = parseInt(transMatch[1]);
+          const { type, amount, date } = data;
+          if (!['debt', 'payment'].includes(type) || !amount || amount <= 0 || !date) {
+            return sendJSON(res, { error: 'بيانات غير صحيحة' }, 400);
+          }
+          const result = await supabaseRequest('transactions', {
+            method: 'POST',
+            body: JSON.stringify({ customer_id: id, type, amount: parseFloat(amount), date })
+          });
+          return sendJSON(res, result[0]);
+        }
+
+        const transIdMatch = pathname.match(/^\/api\/transactions\/(\d+)$/);
+        if (transIdMatch && method === 'PUT') {
+          if (session.role !== 'admin') return sendJSON(res, { error: 'صلاحيات غير كافية' }, 403);
+          const id = parseInt(transIdMatch[1]);
+          const { type, amount, date } = data;
+          const result = await supabaseRequest(`transactions?id=eq.${id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ type, amount: parseFloat(amount), date })
+          });
+          return sendJSON(res, result[0]);
+        }
+
+        if (transIdMatch && method === 'DELETE') {
+          if (session.role !== 'admin') return sendJSON(res, { error: 'صلاحيات غير كافية' }, 403);
+          const id = parseInt(transIdMatch[1]);
+          await supabaseRequest(`transactions?id=eq.${id}`, { method: 'DELETE' });
+          return sendJSON(res, { success: true });
+        }
+
+        if (pathname === '/api/stats' && method === 'GET') {
+          if (session.role !== 'admin') return sendJSON(res, { error: 'صلاحيات غير كافية' }, 403);
+          const allTrans = await supabaseRequest('transactions?select=*') || [];
+          const now = new Date();
+          const today = now.toISOString().split('T')[0];
+          const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+          const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+
+          const total = allTrans.reduce((sum, t) => sum + (t.type === 'debt' ? Number(t.amount) : -Number(t.amount)), 0);
+          const daily = allTrans.filter(t => t.date === today && t.type === 'debt').reduce((s, t) => s + Number(t.amount), 0);
+          const weekly = allTrans.filter(t => t.date >= weekAgo && t.type === 'debt').reduce((s, t) => s + Number(t.amount), 0);
+          const monthly = allTrans.filter(t => t.date >= monthStart && t.type === 'debt').reduce((s, t) => s + Number(t.amount), 0);
+
+          return sendJSON(res, { total, daily, weekly, monthly });
+        }
+
+        return sendJSON(res, { error: 'غير موجود' }, 404);
+      } catch (err) {
+        console.error(err);
+        return sendJSON(res, { error: 'خطأ في قاعدة البيانات' }, 500);
+      }
+    });
+    return;
   }
-});
 
-// Add Customer
-document.getElementById('add-customer-btn').addEventListener('click', () => {
-  document.getElementById('add-customer-modal').classList.add('active');
-});
-
-function closeAddModal() {
-  document.getElementById('add-customer-modal').classList.remove('active');
-  document.getElementById('add-customer-form').reset();
-}
-
-document.getElementById('add-customer-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const name = document.getElementById('new-name').value.trim();
-  const phone = document.getElementById('new-phone').value.trim();
-
-  const res = await fetch('/api/customers', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({ name, phone })
-  });
-
-  if (res.ok) {
-    closeAddModal();
-    await loadCustomers();
+  let filePath = pathname === '/' ? path.join(PUBLIC, 'index.html') : path.join(PUBLIC, pathname);
+  if (!filePath.startsWith(PUBLIC)) {
+    res.writeHead(403);
+    res.end('Forbidden');
+    return;
   }
+  sendFile(res, filePath);
 });
 
-// Helpers
-function formatMoney(amount) {
-  return Number(amount).toFixed(2) + ' ₪';
-}
-
-function getBalanceClass(balance) {
-  if (balance > 0) return 'positive';
-  if (balance < 0) return 'negative';
-  return 'zero';
-}
-
-function formatDate(dateStr) {
-  if (!dateStr) return '-';
-  const d = new Date(dateStr);
-  return d.toLocaleDateString('ar-EG');
-}
-
-function cleanPhone(phone) {
-  let cleaned = phone.replace(/\D/g, '');
-  if (cleaned.startsWith('0')) cleaned = '972' + cleaned.slice(1);
-  if (!cleaned.startsWith('972')) cleaned = '972' + cleaned;
-  return cleaned;
-}
-
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
-
-// Check session on load
-(async function init() {
-  try {
-    const res = await fetch('/api/me', { credentials: 'include' });
-    if (res.ok) {
-      currentUser = await res.json();
-      showApp();
-    }
-  } catch (e) {}
-})();
+server.listen(PORT, () => {
+  console.log(`✅ سجلها علي يعمل على المنفذ ${PORT}`);
+});
