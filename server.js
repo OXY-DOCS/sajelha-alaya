@@ -7,11 +7,8 @@ const crypto = require('crypto');
 const PORT = process.env.PORT || 3000;
 const PUBLIC = __dirname;
 
-// Supabase Config (set these in Render Environment Variables)
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_KEY = process.env.SUPABASE_KEY || '';
-
-const sessions = new Map();
 
 async function supabaseRequest(endpoint, options = {}) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${endpoint}`, {
@@ -43,23 +40,43 @@ function parseCookies(req) {
   return list;
 }
 
-function getSession(req) {
+async function getSession(req) {
   const cookies = parseCookies(req);
   const sid = cookies.sid;
-  if (sid && sessions.has(sid)) return sessions.get(sid);
-  return null;
+  if (!sid) return null;
+  const sessions = await supabaseRequest(`sessions?sid=eq.${sid}&select=*&limit=1`);
+  if (!sessions || !sessions[0]) return null;
+  const session = sessions[0];
+  // Check expiry (24 hours)
+  if (new Date(session.expires_at) < new Date()) {
+    await supabaseRequest(`sessions?sid=eq.${sid}`, { method: 'DELETE' });
+    return null;
+  }
+  return { id: session.user_id, username: session.username, role: session.role };
 }
 
-function setSession(res, user) {
+async function setSession(res, user) {
   const sid = crypto.randomBytes(16).toString('hex');
-  sessions.set(sid, user);
+  const expires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  await supabaseRequest('sessions', {
+    method: 'POST',
+    body: JSON.stringify({
+      sid,
+      user_id: user.id,
+      username: user.username,
+      role: user.role,
+      expires_at: expires
+    })
+  });
   res.setHeader('Set-Cookie', `sid=${sid}; Path=/; HttpOnly; Max-Age=86400`);
   return sid;
 }
 
-function clearSession(req, res) {
+async function clearSession(req, res) {
   const cookies = parseCookies(req);
-  if (cookies.sid) sessions.delete(cookies.sid);
+  if (cookies.sid) {
+    await supabaseRequest(`sessions?sid=eq.${cookies.sid}`, { method: 'DELETE' });
+  }
   res.setHeader('Set-Cookie', 'sid=; Path=/; HttpOnly; Max-Age=0');
 }
 
@@ -94,7 +111,7 @@ const server = http.createServer(async (req, res) => {
 
   res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.setHeader('Access-Control-Allow-Credentials', 'true');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (method === 'OPTIONS') {
@@ -110,20 +127,19 @@ const server = http.createServer(async (req, res) => {
       let data = {};
       try { if (body) data = JSON.parse(body); } catch (e) {}
 
-      const session = getSession(req);
+      const session = await getSession(req);
 
       try {
-        // Login
         if (pathname === '/api/login' && method === 'POST') {
-          const users = await supabaseRequest(`users?username=eq.${data.username}&password=eq.${data.password}&select=*`);
+          const users = await supabaseRequest(`users?username=eq.${encodeURIComponent(data.username)}&password=eq.${encodeURIComponent(data.password)}&select=*`);
           const user = users && users[0];
           if (!user) return sendJSON(res, { error: 'اسم المستخدم أو كلمة المرور غير صحيحة' }, 401);
-          setSession(res, { id: user.id, username: user.username, role: user.role });
+          await setSession(res, { id: user.id, username: user.username, role: user.role });
           return sendJSON(res, { success: true, user: { id: user.id, username: user.username, role: user.role } });
         }
 
         if (pathname === '/api/logout' && method === 'POST') {
-          clearSession(req, res);
+          await clearSession(req, res);
           return sendJSON(res, { success: true });
         }
 
@@ -134,13 +150,9 @@ const server = http.createServer(async (req, res) => {
 
         if (!session) return sendJSON(res, { error: 'غير مصرح' }, 401);
 
-        // Customers list
         if (pathname === '/api/customers' && method === 'GET') {
           const search = (parsed.query.search || '').toLowerCase();
-          let customers = await supabaseRequest('customers?select=*&order=name.asc');
-          if (!customers) customers = [];
-
-          // Calculate balances
+          let customers = await supabaseRequest('customers?select=*&order=name.asc') || [];
           const allTrans = await supabaseRequest('transactions?select=*') || [];
           customers = customers.map(c => {
             const trans = allTrans.filter(t => t.customer_id === c.id);
@@ -148,14 +160,12 @@ const server = http.createServer(async (req, res) => {
             const first = trans.length ? trans.map(t => t.date).sort()[0] : null;
             return { ...c, balance, first_transaction: first };
           });
-
           if (search) {
-            customers = customers.filter(c => c.name.toLowerCase().includes(search) || c.phone.includes(search));
+            customers = customers.filter(c => c.name.toLowerCase().includes(search) || (c.phone && c.phone.includes(search)));
           }
           return sendJSON(res, customers);
         }
 
-        // Add customer
         if (pathname === '/api/customers' && method === 'POST') {
           const { name, phone } = data;
           if (!name || !phone) return sendJSON(res, { error: 'الاسم والهاتف مطلوبان' }, 400);
@@ -166,7 +176,6 @@ const server = http.createServer(async (req, res) => {
           return sendJSON(res, result[0]);
         }
 
-        // Customer detail
         const custMatch = pathname.match(/^\/api\/customers\/(\d+)$/);
         if (custMatch && method === 'GET') {
           const id = parseInt(custMatch[1]);
@@ -178,7 +187,27 @@ const server = http.createServer(async (req, res) => {
           return sendJSON(res, { ...customer, transactions, balance });
         }
 
-        // Add transaction
+        // Admin: Update customer
+        if (custMatch && method === 'PUT') {
+          if (session.role !== 'admin') return sendJSON(res, { error: 'صلاحيات غير كافية' }, 403);
+          const id = parseInt(custMatch[1]);
+          const { name, phone } = data;
+          if (!name || !phone) return sendJSON(res, { error: 'الاسم والهاتف مطلوبان' }, 400);
+          const result = await supabaseRequest(`customers?id=eq.${id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ name, phone })
+          });
+          return sendJSON(res, result[0]);
+        }
+
+        // Admin: Delete customer
+        if (custMatch && method === 'DELETE') {
+          if (session.role !== 'admin') return sendJSON(res, { error: 'صلاحيات غير كافية' }, 403);
+          const id = parseInt(custMatch[1]);
+          await supabaseRequest(`customers?id=eq.${id}`, { method: 'DELETE' });
+          return sendJSON(res, { success: true });
+        }
+
         const transMatch = pathname.match(/^\/api\/customers\/(\d+)\/transactions$/);
         if (transMatch && method === 'POST') {
           const id = parseInt(transMatch[1]);
@@ -193,7 +222,26 @@ const server = http.createServer(async (req, res) => {
           return sendJSON(res, result[0]);
         }
 
-        // Stats
+        // Admin: Update / Delete transaction
+        const transIdMatch = pathname.match(/^\/api\/transactions\/(\d+)$/);
+        if (transIdMatch && method === 'PUT') {
+          if (session.role !== 'admin') return sendJSON(res, { error: 'صلاحيات غير كافية' }, 403);
+          const id = parseInt(transIdMatch[1]);
+          const { type, amount, date } = data;
+          const result = await supabaseRequest(`transactions?id=eq.${id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ type, amount: parseFloat(amount), date })
+          });
+          return sendJSON(res, result[0]);
+        }
+
+        if (transIdMatch && method === 'DELETE') {
+          if (session.role !== 'admin') return sendJSON(res, { error: 'صلاحيات غير كافية' }, 403);
+          const id = parseInt(transIdMatch[1]);
+          await supabaseRequest(`transactions?id=eq.${id}`, { method: 'DELETE' });
+          return sendJSON(res, { success: true });
+        }
+
         if (pathname === '/api/stats' && method === 'GET') {
           if (session.role !== 'admin') return sendJSON(res, { error: 'صلاحيات غير كافية' }, 403);
           const allTrans = await supabaseRequest('transactions?select=*') || [];
@@ -219,7 +267,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Static files
   let filePath = pathname === '/' ? path.join(PUBLIC, 'index.html') : path.join(PUBLIC, pathname);
   if (!filePath.startsWith(PUBLIC)) {
     res.writeHead(403);
@@ -230,8 +277,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`\n✅ سجلها علي يعمل على: http://localhost:${PORT}`);
-  if (!SUPABASE_URL || !SUPABASE_KEY) {
-    console.log('⚠️  تحذير: متغيرات SUPABASE_URL و SUPABASE_KEY غير موجودة');
-  }
+  console.log(`✅ سجلها علي يعمل على المنفذ ${PORT}`);
 });
