@@ -4,6 +4,22 @@ const path = require('path');
 const url = require('url');
 const crypto = require('crypto');
 
+function hashPassword(password) {
+  return crypto.createHash('sha256').update(password + 'sajelha-salt-2026').digest('hex');
+}
+
+const loginAttempts = new Map();
+
+function checkRateLimit(ip) {
+  const now = Date.now();
+  const attempts = loginAttempts.get(ip) || [];
+  const recent = attempts.filter(t => now - t < 15 * 60 * 1000);
+  if (recent.length >= 5) return false;
+  recent.push(now);
+  loginAttempts.set(ip, recent);
+  return true;
+}
+
 const PORT = process.env.PORT || 3000;
 const PUBLIC = __dirname;
 
@@ -113,8 +129,13 @@ const server = http.createServer(async (req, res) => {
 
       try {
         if (pathname === '/api/login' && method === 'POST') {
-          const users = await supabaseRequest(`users?username=eq.${encodeURIComponent(data.username)}&password=eq.${encodeURIComponent(data.password)}&select=*`);
-          const user = users && users[0];
+          const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+          if (!checkRateLimit(ip)) {
+            return sendJSON(res, { error: 'تم تجاوز عدد المحاولات. حاول بعد 15 دقيقة' }, 429);
+          }
+          const hashed = hashPassword(data.password || '');
+          const users = await supabaseRequest(`users?username=eq.${encodeURIComponent(data.username)}&select=*`);
+          const user = users && users.find(u => u.password === hashed || u.password === data.password);
           if (!user) return sendJSON(res, { error: 'اسم المستخدم أو كلمة المرور غير صحيحة' }, 401);
           setSession(res, { id: user.id, username: user.username, role: user.role });
           return sendJSON(res, { success: true, user: { id: user.id, username: user.username, role: user.role } });
@@ -231,30 +252,4 @@ const server = http.createServer(async (req, res) => {
 
           const total = allTrans.reduce((sum, t) => sum + (t.type === 'debt' ? Number(t.amount) : -Number(t.amount)), 0);
           const daily = allTrans.filter(t => t.date === today && t.type === 'debt').reduce((s, t) => s + Number(t.amount), 0);
-          const weekly = allTrans.filter(t => t.date >= weekAgo && t.type === 'debt').reduce((s, t) => s + Number(t.amount), 0);
-          const monthly = allTrans.filter(t => t.date >= monthStart && t.type === 'debt').reduce((s, t) => s + Number(t.amount), 0);
-
-          return sendJSON(res, { total, daily, weekly, monthly });
-        }
-
-        return sendJSON(res, { error: 'غير موجود' }, 404);
-      } catch (err) {
-        console.error(err);
-        return sendJSON(res, { error: 'خطأ في قاعدة البيانات' }, 500);
-      }
-    });
-    return;
-  }
-
-  let filePath = pathname === '/' ? path.join(PUBLIC, 'index.html') : path.join(PUBLIC, pathname);
-  if (!filePath.startsWith(PUBLIC)) {
-    res.writeHead(403);
-    res.end('Forbidden');
-    return;
-  }
-  sendFile(res, filePath);
-});
-
-server.listen(PORT, () => {
-  console.log(`✅ سجلها علي يعمل على المنفذ ${PORT}`);
-});
+          const weekly = allTrans.filter(t => t.date >= weekAgo && t.type === 'debt').reduce((s, t) => s + Number(t.amoun
