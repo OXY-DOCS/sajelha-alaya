@@ -24,6 +24,9 @@ body {
   background: linear-gradient(135deg, #FFF5F5 0%, #FFEBEE 50%, #FCE4EC 100%);
   color: var(--text);
   min-height: 100vh;
+  font-variant-numeric: lining-nums;
+  -webkit-font-feature-settings: "lnum";
+  font-feature-settings: "lnum";
 }
 
 .screen { display: none; }
