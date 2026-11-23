@@ -96,26 +96,16 @@ async function loadAdminData() {
 
   const container = document.getElementById('admin-customers-list');
   container.innerHTML = `
-    <table>
-      <thead>
-        <tr>
-          <th>الاسم</th>
-          <th>الهاتف</th>
-          <th>الرصيد</th>
-          <th>منذ</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${customers.map(c => `
-          <tr onclick="openCustomer(${c.id})" style="cursor:pointer">
-            <td>${escapeHtml(c.name)}</td>
-            <td>${escapeHtml(c.phone)}</td>
-            <td class="balance ${getBalanceClass(c.balance)}">${formatMoney(c.balance)}</td>
-            <td>${c.first_transaction ? formatDate(c.first_transaction) : '-'}</td>
-          </tr>
-        `).join('')}
-      </tbody>
-    </table>
+    <div class="customers-grid">
+      ${customers.map(c => `
+        <div class="customer-card" onclick="openCustomer(${c.id})">
+          <h4>${escapeHtml(c.name)}</h4>
+          <div class="phone">${escapeHtml(c.phone)}</div>
+          <div class="balance ${getBalanceClass(c.balance)}">${formatMoney(c.balance)}</div>
+          <div style="font-size:13px;color:#757575;margin-top:6px">منذ: ${c.first_transaction ? formatDate(c.first_transaction) : '-'}</div>
+        </div>
+      `).join('')}
+    </div>
   `;
 }
 
