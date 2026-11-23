@@ -132,17 +132,41 @@ async function openCustomer(id) {
   balanceEl.className = 'balance ' + getBalanceClass(data.balance);
 
   const transContainer = document.getElementById('transactions-container');
+  const isAdmin = currentUser && currentUser.role === 'admin';
   transContainer.innerHTML = data.transactions.length ? data.transactions.map(t => `
     <div class="transaction-item">
       <div>
         <span class="type ${t.type}">${t.type === 'debt' ? 'دين' : 'دفعة'}</span>
         <span style="color:#757575;margin-right:10px">${formatDate(t.date)}</span>
       </div>
-      <strong class="${t.type === 'debt' ? 'type debt' : 'type payment'}">
-        ${t.type === 'debt' ? '+' : '-'}${formatMoney(t.amount)}
-      </strong>
+      <div style="display:flex;align-items:center;gap:8px">
+        <strong class="${t.type === 'debt' ? 'type debt' : 'type payment'}">
+          ${t.type === 'debt' ? '+' : '-'}${formatMoney(t.amount)}
+        </strong>
+        ${isAdmin ? `
+          <button onclick="editTransaction(${t.id}, '${t.type}', ${t.amount}, '${t.date}')" style="background:#FF9800;color:white;border:none;padding:4px 8px;border-radius:6px;cursor:pointer;font-size:12px">تعديل</button>
+          <button onclick="deleteTransaction(${t.id})" style="background:#E53935;color:white;border:none;padding:4px 8px;border-radius:6px;cursor:pointer;font-size:12px">حذف</button>
+        ` : ''}
+      </div>
     </div>
   `).join('') : '<p style="text-align:center;color:#757575;">لا توجد حركات بعد</p>';
+
+  // Admin customer controls
+  let adminControls = document.getElementById('admin-customer-controls');
+  if (!adminControls) {
+    adminControls = document.createElement('div');
+    adminControls.id = 'admin-customer-controls';
+    adminControls.style.marginTop = '10px';
+    document.querySelector('.customer-info').appendChild(adminControls);
+  }
+  if (isAdmin) {
+    adminControls.innerHTML = `
+      <button onclick="editCustomer(${data.id}, '${escapeHtml(data.name)}', '${escapeHtml(data.phone)}')" style="background:#FF9800;color:white;border:none;padding:8px 12px;border-radius:8px;cursor:pointer;margin-left:8px">تعديل الزبون</button>
+      <button onclick="deleteCustomer(${data.id})" style="background:#E53935;color:white;border:none;padding:8px 12px;border-radius:8px;cursor:pointer">حذف الزبون</button>
+    `;
+  } else {
+    adminControls.innerHTML = '';
+  }
 
   // WhatsApp
   document.getElementById('whatsapp-btn').onclick = () => {
@@ -160,6 +184,62 @@ async function openCustomer(id) {
 function closeModal() {
   document.getElementById('customer-modal').classList.remove('active');
   currentCustomerId = null;
+}
+
+// Admin functions
+async function editCustomer(id, name, phone) {
+  const newName = prompt('الاسم الجديد:', name);
+  if (!newName) return;
+  const newPhone = prompt('الهاتف الجديد:', phone);
+  if (!newPhone) return;
+  const res = await fetch(`/api/customers/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ name: newName, phone: newPhone })
+  });
+  if (res.ok) {
+    await openCustomer(id);
+    if (currentUser.role === 'admin') await loadAdminData();
+  }
+}
+
+async function deleteCustomer(id) {
+  if (!confirm('هل أنت متأكد من حذف هذا الزبون وكل حركاته؟')) return;
+  const res = await fetch(`/api/customers/${id}`, {
+    method: 'DELETE',
+    credentials: 'include'
+  });
+  if (res.ok) {
+    closeModal();
+    if (currentUser.role === 'admin') await loadAdminData();
+    else await loadCustomers();
+  }
+}
+
+async function editTransaction(id, type, amount, date) {
+  const newType = prompt('النوع (debt أو payment):', type);
+  if (!newType || !['debt', 'payment'].includes(newType)) return;
+  const newAmount = prompt('المبلغ الجديد:', amount);
+  if (!newAmount || isNaN(newAmount)) return;
+  const newDate = prompt('التاريخ (YYYY-MM-DD):', date);
+  if (!newDate) return;
+  const res = await fetch(`/api/transactions/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ type: newType, amount: parseFloat(newAmount), date: newDate })
+  });
+  if (res.ok && currentCustomerId) await openCustomer(currentCustomerId);
+}
+
+async function deleteTransaction(id) {
+  if (!confirm('هل أنت متأكد من حذف هذه الحركة؟')) return;
+  const res = await fetch(`/api/transactions/${id}`, {
+    method: 'DELETE',
+    credentials: 'include'
+  });
+  if (res.ok && currentCustomerId) await openCustomer(currentCustomerId);
 }
 
 // Add Transaction
