@@ -316,20 +316,18 @@ document.getElementById('add-customer-form').addEventListener('submit', async (e
 });
 
 // Helpers
-function formatMoney(amount) {
-  return Number(amount).toFixed(2) + ' ₪';
-}
-
-function getBalanceClass(balance) {
-  if (balance > 0) return 'positive';
-  if (balance < 0) return 'negative';
-  return 'zero';
-}
-
 function formatDate(dateStr) {
   if (!dateStr) return '-';
-  const d = new Date(dateStr);
-  return d.toLocaleDateString('ar-EG');
+  const d = new Date(dateStr + 'T00:00:00');
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const year = String(d.getFullYear());
+  return day + '/' + month + '/' + year;
+}
+
+function formatMoney(amount) {
+  const num = Number(amount).toFixed(2);
+  return num + ' ₪';
 }
 
 function cleanPhone(phone) {
